@@ -1405,3 +1405,63 @@ uvicorn aegis_nexus.api:app --host 0.0.0.0 --port 8085 --reload
 
 # 4. Test: Admin Evaluation (Must Pass)
 # curl -X POST http://localhost:8085/run-eval -H "Content-Type: application/json" -H "X-Admin-Key: secure-eval-456" -d '{"config_path":"configs/eval_config.yaml"}'
+# infra/terraform/main.tf (Snippet for GKE Confidential Computing)
+
+terraform {
+  required_version = ">= 1.6.0"
+}
+
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+# --- Confidential GKE Cluster Definition ---
+resource "google_container_cluster" "aegis_gke" {
+  name     = "aegis-nexus-g14"
+  location = var.region
+  
+  # MANDATE: Enforce Confidential Computing at the node pool level
+  remove_default_node_pool = true
+  initial_node_count       = 1
+  
+  # Standard high-assurance features
+  enable_shielded_nodes   = true
+  network_policy {
+    enabled  = true
+    provider = "CALICO"
+  }
+}
+
+# --- Node Pool for Confidential Microservices (ZKP/PQC) ---
+resource "google_container_node_pool" "confidential_pool" {
+  name       = "zkp-pqc-confidential-pool"
+  location   = var.region
+  cluster    = google_container_cluster.aegis_gke.name
+  node_count = 2 # At least two nodes for high availability
+
+  node_config {
+    machine_type = "c2d-standard-4" # Use machine types that support Confidential VMs (e.g., C2D)
+    
+    # 🌟 ULTIMATE INNOVATION: Confidential Computing Enforcement 🌟
+    confidential_instance_config {
+      enable_confidential_compute = true # Hardware-level memory encryption
+    }
+
+    # Standard high-assurance features
+    shielded_instance_config {
+      enable_secure_boot        = true
+      enable_integrity_monitoring = true
+    }
+    
+    # Necessary scopes for Google services
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform",
+    ]
+  }
+  # Ensures the node pool auto-repairs and auto-scales
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+}
