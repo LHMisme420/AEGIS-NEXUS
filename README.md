@@ -1336,3 +1336,72 @@ curl -X POST http://localhost:8085/eval \
 env:
   AEGIS_API_KEY: dummy
   AEGIS_ADMIN_KEY: dummy
+# aegis_nexus/auth.py
+from fastapi import Header, HTTPException, status
+import os
+from dotenv import load_dotenv
+
+# Load keys from environment variables for secure deployment
+load_dotenv() 
+API_KEY = os.getenv("AEGIS_API_KEY", "default-api-key") # Standard access
+ADMIN_KEY = os.getenv("AEGIS_ADMIN_KEY", "default-admin-key") # Privileged access
+
+def verify_api_key(x_api_key: str = Header(None)):
+    """Verifies standard safety check access."""
+    if not x_api_key or x_api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+
+def verify_admin_key(x_admin_key: str = Header(None)):
+    """Verifies privileged administrative access (for evaluations)."""
+    if not x_admin_key or x_admin_key != ADMIN_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required (Invalid Admin Key)",
+        )
+
+# aegis_nexus/api.py (Updated Endpoints)
+from fastapi import FastAPI, Depends, HTTPException
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+from .core import CoreEngine
+from .evalforge import EvalForge
+from .auth import verify_api_key, verify_admin_key  # Import new auth functions
+
+# ... (Engine and EvalForge initialization remains the same) ...
+
+app = FastAPI(
+    title="Aegis Nexus API",
+    description="HTTP interface for the Aegis Nexus Safety OS (Secured with API Keys)",
+    version="0.3.1",
+)
+
+# Endpoint 1: Standard Evaluation (Requires X-API-Key)
+@app.post("/eval", response_model=EvalResponse, dependencies=[Depends(verify_api_key)])
+def eval_text(payload: EvalRequest):
+    # This evaluates a single piece of text for basic safety scoring
+    res = engine.hypothesis_test(payload.text, threshold=payload.threshold)
+    return EvalResponse(**res)
+
+# Endpoint 2: Full Benchmark Run (Requires X-Admin-Key)
+@app.post("/run-eval", dependencies=[Depends(verify_admin_key)])
+def run_eval(payload: EvalFileRequest):
+    # This runs complex, resource-intensive benchmarks from a config file
+    metrics, results = eval_forge.run_from_yaml(payload.config_path)
+    return {"metrics": metrics, "results": results}
+
+# ... (Other endpoints like /proofs should also be protected) ...
+# 1. Set environment variables (simulated secrets injection)
+export AEGIS_API_KEY="safe-check-123"
+export AEGIS_ADMIN_KEY="secure-eval-456"
+
+# 2. Start the API (using uvicorn)
+uvicorn aegis_nexus.api:app --host 0.0.0.0 --port 8085 --reload
+
+# 3. Test: Standard Evaluation (Must Pass)
+# curl -X POST http://localhost:8085/eval -H "Content-Type: application/json" -H "X-API-Key: safe-check-123" -d '{"text":"Evaluate this."}'
+
+# 4. Test: Admin Evaluation (Must Pass)
+# curl -X POST http://localhost:8085/run-eval -H "Content-Type: application/json" -H "X-Admin-Key: secure-eval-456" -d '{"config_path":"configs/eval_config.yaml"}'
