@@ -2164,3 +2164,257 @@ Aegis Nexus now ships with **three** concentric security layers:
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "version": "0.4.3"}
+# aegis_nexus/auth_jwt.py (Finalized JWT Logic)
+import os
+import jwt
+import datetime
+import uuid
+from dotenv import load_dotenv
+from passlib.context import CryptContext
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from aegis_nexus.session_store import get_session_store
+
+load_dotenv()
+
+# --- Secrets and Config ---
+SECRET_KEY = os.getenv("AEGIS_JWT_SECRET", "change-this-secret")
+REFRESH_SECRET_KEY = os.getenv("AEGIS_REFRESH_SECRET", "change-this-refresh-secret")
+ALGORITHM = "HS256"
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+# Session store initialization
+session_store = get_session_store()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+
+# Mock User DB (secure, hashed passwords)
+users_db = {
+    "admin": {"username": "admin", "hashed_password": pwd_context.hash("adminpass"), "role": "admin"},
+    "researcher": {"username": "researcher", "hashed_password": pwd_context.hash("aegis123"), "role": "user"},
+}
+
+def verify_password(plain, hashed):
+    return pwd_context.verify(plain, hashed)
+
+def create_access_token(data: dict, expires_delta: int = ACCESS_TOKEN_EXPIRE_MINUTES):
+    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=expires_delta)
+    jti = str(uuid.uuid4()) # Unique JWT ID for revocation
+    to_encode = {**data, "exp": expire, "jti": jti}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def create_refresh_token(username: str):
+    expire = datetime.datetime.utcnow() + datetime.timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode = {"sub": username, "exp": expire}
+    token = jwt.encode(to_encode, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
+    session_store.set_refresh_token(username, token) # Persist token
+    return token
+
+def authenticate_user(username: str, password: str):
+    user = users_db.get(username)
+    if not user or not verify_password(password, user["hashed_password"]):
+        return None
+    return user
+
+def decode_token(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        jti = payload.get("jti")
+        # Check revocation list (for immediate logouts)
+        if jti and session_store.is_revoked(jti):
+            raise HTTPException(status_code=401, detail="Token revoked")
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+def refresh_access_token(refresh_token: str):
+    try:
+        payload = jwt.decode(refresh_token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        stored_token = session_store.get_refresh_token(username)
+
+        # Check against stored token (rotation security: only the latest token is valid)
+        if stored_token != refresh_token:
+            # High-security fail: Invalidate all sessions if an old token is used
+            session_store.revoke_user_sessions(username) 
+            raise HTTPException(status_code=401, detail="Invalid or reused refresh token")
+
+        user = users_db.get(username)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Issue new pair and rotate refresh token
+        new_refresh = create_refresh_token(username)
+        new_access = create_access_token({"sub": username, "role": user["role"]})
+        return {"access_token": new_access, "refresh_token": new_refresh}
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+def revoke_access_jti(jti: str):
+    session_store.revoke_jti(jti)
+
+def revoke_user_sessions(username: str):
+    session_store.revoke_user_sessions(username)
+# aegis_nexus/auth_jwt.py (Finalized JWT Logic)
+import os
+import jwt
+import datetime
+import uuid
+from dotenv import load_dotenv
+from passlib.context import CryptContext
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from aegis_nexus.session_store import get_session_store
+
+load_dotenv()
+
+# --- Secrets and Config ---
+SECRET_KEY = os.getenv("AEGIS_JWT_SECRET", "change-this-secret")
+REFRESH_SECRET_KEY = os.getenv("AEGIS_REFRESH_SECRET", "change-this-refresh-secret")
+ALGORITHM = "HS256"
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+# Session store initialization
+session_store = get_session_store()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+
+# Mock User DB (secure, hashed passwords)
+users_db = {
+    "admin": {"username": "admin", "hashed_password": pwd_context.hash("adminpass"), "role": "admin"},
+    "researcher": {"username": "researcher", "hashed_password": pwd_context.hash("aegis123"), "role": "user"},
+}
+
+def verify_password(plain, hashed):
+    return pwd_context.verify(plain, hashed)
+
+def create_access_token(data: dict, expires_delta: int = ACCESS_TOKEN_EXPIRE_MINUTES):
+    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=expires_delta)
+    jti = str(uuid.uuid4()) # Unique JWT ID for revocation
+    to_encode = {**data, "exp": expire, "jti": jti}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def create_refresh_token(username: str):
+    expire = datetime.datetime.utcnow() + datetime.timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode = {"sub": username, "exp": expire}
+    token = jwt.encode(to_encode, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
+    session_store.set_refresh_token(username, token) # Persist token
+    return token
+
+def authenticate_user(username: str, password: str):
+    user = users_db.get(username)
+    if not user or not verify_password(password, user["hashed_password"]):
+        return None
+    return user
+
+def decode_token(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        jti = payload.get("jti")
+        # Check revocation list (for immediate logouts)
+        if jti and session_store.is_revoked(jti):
+            raise HTTPException(status_code=401, detail="Token revoked")
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+def refresh_access_token(refresh_token: str):
+    try:
+        payload = jwt.decode(refresh_token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        stored_token = session_store.get_refresh_token(username)
+
+        # Check against stored token (rotation security: only the latest token is valid)
+        if stored_token != refresh_token:
+            # High-security fail: Invalidate all sessions if an old token is used
+            session_store.revoke_user_sessions(username) 
+            raise HTTPException(status_code=401, detail="Invalid or reused refresh token")
+
+        user = users_db.get(username)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Issue new pair and rotate refresh token
+        new_refresh = create_refresh_token(username)
+        new_access = create_access_token({"sub": username, "role": user["role"]})
+        return {"access_token": new_access, "refresh_token": new_refresh}
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+def revoke_access_jti(jti: str):
+    session_store.revoke_jti(jti)
+
+def revoke_user_sessions(username: str):
+    session_store.revoke_user_sessions(username)
+# aegis_nexus/api.py (Additions for v0.4.3)
+from fastapi import Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
+from aegis_nexus.auth_jwt import (
+    authenticate_user, create_access_token, create_refresh_token, 
+    refresh_access_token, decode_token, revoke_access_jti, 
+    revoke_user_sessions
+)
+from aegis_nexus.auth import verify_admin_key # For admin routes
+
+# --- Login, Refresh, Logout, and Admin Routes ---
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
+
+class LogoutResponse(BaseModel):
+    detail: str
+
+class RevokeUserRequest(BaseModel):
+    username: str
+
+@app.post("/token")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    access_token = create_access_token({"sub": user["username"], "role": user["role"]})
+    refresh_token = create_refresh_token(user["username"])
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": 900, 
+    }
+
+@app.post("/token/refresh")
+def refresh_tokens(payload: TokenRefreshRequest):
+    return refresh_access_token(payload.refresh_token)
+
+@app.post("/logout", response_model=LogoutResponse)
+def logout_user(payload: dict = Depends(decode_token)):
+    """Revokes the current access token (JTI) for immediate logout."""
+    jti = payload.get("jti")
+    if jti:
+        revoke_access_jti(jti)
+    return {"detail": "Logged out successfully (token revoked)."}
+
+@app.post("/admin/revoke-user", dependencies=[Depends(verify_admin_key)])
+def admin_revoke_user(req: RevokeUserRequest):
+    """Admin action to immediately invalidate all refresh tokens for a user."""
+    revoke_user_sessions(req.username)
+    return {"detail": f"All sessions for {req.username} revoked."}
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok", "version": "0.4.3"}
